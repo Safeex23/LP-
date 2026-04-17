@@ -123,10 +123,12 @@ MAP_TIPO = {
     'pliego_administrativo': [
         'pcap', 'pliego de clausulas', 'pliego administrativo',
         'condiciones administrativas', 'clausulas administrativas',
+        'pliego a.', 'pliego a ', 'pliego_a', 'pliego clausulas',
     ],
     'pliego_tecnico': [
         'ppt', 'prescripciones tecnicas', 'pliego tecnico',
         'especificaciones tecnicas', 'condiciones tecnicas',
+        'prescripciones_tecnicas',
     ],
     'anuncio_DOC_CAN_ADJ': [
         'adjudicacion', 'resolucion adjudicacion', 'acuerdo adjudicacion',
@@ -304,9 +306,20 @@ def urls_ya_descargadas(conn, expediente):
     )
 
 
+def _ruta_relativa(ruta_abs):
+    """Convierte ruta absoluta a relativa respecto a RUTA_PDFS para almacenar en BD."""
+    try:
+        return str(Path(ruta_abs).relative_to(RUTA_PDFS))
+    except ValueError:
+        return ruta_abs  # fuera de RUTA_PDFS: guardar tal cual
+
+
 def guardar_doc(conn, expediente, tipo_inf, doc_url, ruta_local, error=None):
-    """Guarda o actualiza un documento en la BD de forma incremental."""
+    """Guarda o actualiza un documento en la BD de forma incremental.
+    ruta_local se almacena como ruta relativa a RUTA_PDFS."""
     if ruta_local:
+        # Guardar siempre relativa para independencia de máquina
+        ruta_guardada = _ruta_relativa(ruta_local)
         # Intentar actualizar fila existente sin URL del mismo tipo
         fila = conn.execute('''
             SELECT id FROM documentos
@@ -317,12 +330,12 @@ def guardar_doc(conn, expediente, tipo_inf, doc_url, ruta_local, error=None):
         if fila:
             conn.execute(
                 "UPDATE documentos SET descargado=1, ruta_local=?, doc_url=?, error='' WHERE id=?",
-                (ruta_local, doc_url, fila[0])
+                (ruta_guardada, doc_url, fila[0])
             )
         else:
             conn.execute(
                 "INSERT INTO documentos (expediente, tipo_documento, doc_url, ruta_local, descargado, error) VALUES (?,?,?,?,1,'')",
-                (expediente, tipo_inf, doc_url, ruta_local)
+                (expediente, tipo_inf, doc_url, ruta_guardada)
             )
     elif error:
         conn.execute('''

@@ -25,14 +25,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
 from base import (
     PortalBase, ejecutar_portal, args_comunes,
-    get_domain, ext_valida, parece_descarga, es_navegacion,
-    clasificar_tipo, inferir_nombre_fichero, nombre_unico,
-    descargar_binario, capturar_pagina_pdf,
+    get_domain, nombre_unico,
+    capturar_pagina_pdf,
     WAIT_TIMEOUT,
 )
 
@@ -60,32 +57,6 @@ class PortalNavarra(PortalBase):
             pass
         time.sleep(3)
         self._cookies(get_domain(url))
-
-    def encontrar_enlaces(self, base_url):
-        soup = BeautifulSoup(self.driver.page_source, 'html.parser')
-        base_domain = get_domain(base_url)
-        encontrados, vistos = [], set()
-
-        for tag in soup.find_all('a', href=True):
-            href = tag['href'].strip()
-            if not href:
-                continue
-            href_abs = urljoin(base_url, href)
-
-            if not (ext_valida(href_abs) or parece_descarga(href_abs)):
-                continue
-            if es_navegacion(href_abs):
-                continue
-            if href_abs in vistos:
-                continue
-            vistos.add(href_abs)
-
-            texto = tag.get_text(strip=True)
-            ctx = self._contexto(tag)
-            tipo = clasificar_tipo(ctx + ' ' + texto, href_abs)
-            encontrados.append({'url': href_abs, 'texto': texto, 'ctx': ctx, 'tipo': tipo})
-
-        return encontrados
 
     def procesar(self, entry_link, expediente, exp_dir, urls_desc):
         """Si no hay PDFs directos, capturar la página entera."""

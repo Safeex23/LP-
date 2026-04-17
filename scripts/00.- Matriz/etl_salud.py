@@ -4,8 +4,8 @@ etl_salud.py — Pipeline ETL para licitaciones del sector salud (CPV 33* y 85*)
 Pipeline paralelo al general. No modifica scripts existentes.
 Reutiliza parse_placsp.py como librería.
 
-- Fuentes: Sector Publico + Agregacion (SIN Contratos Menores)
-- Filtro: CPV principal que empiece por '33' o '85'
+- Fuentes: Sector Publico + Agregacion + Contratos Menores (sindicación 1143)
+- Filtro: CPV principal O adicional que empiece por '33' o '85'
 - Datos de entrada: ZIPs/atoms ya descargados en datos\Sector Publico\raw y datos\Agregacion\raw
 - Salida: 4 CSVs acumulados en salud\datos\csv\{anio}\
 - NO descarga nada nuevo (usa atoms existentes)
@@ -45,12 +45,14 @@ BASE_DATOS   = r'C:\proyectos\licitaciones\datos'        # atoms originales
 BASE_SALUD   = r'C:\proyectos\licitaciones\salud\datos'  # salida CSV
 
 FUENTES_SALUD = [
-    ('Sector Publico', 'licitacionesPerfilesContratanteCompleto3.atom'),
-    ('Agregacion',     'PlataformasAgregadasSinMenores.atom'),
+    ('Sector Publico',    'licitacionesPerfilesContratanteCompleto3.atom'),
+    ('Agregacion',        'PlataformasAgregadasSinMenores.atom'),
+    ('Contratos Menores', 'contratosMenoresPerfilesContratantes.atom'),  # sindicación 1143
 ]
 CARPETA_FUENTE = {
-    'Sector Publico': 'Sector Publico',
-    'Agregacion':     'Agregacion',
+    'Sector Publico':    'Sector Publico',
+    'Agregacion':        'Agregacion',
+    'Contratos Menores': 'Menores',
 }
 
 # CPVs de salud / sanidad / servicios sociales
@@ -63,19 +65,27 @@ MESES_DEFAULT_2026 = ['01', '02', '03', '04']
 # ---------------------------------------------------------------------------
 # Filtrado CPV
 # ---------------------------------------------------------------------------
-def es_cpv_salud(cpv):
-    """Devuelve True si el CPV pertenece a los grupos 33* o 85*."""
-    cpv_str = str(cpv or '').strip()
-    return any(cpv_str.startswith(p) for p in CPV_PREFIJOS_SALUD)
+def es_cpv_salud(cpv_principal, cpvs_adicionales=''):
+    """
+    Devuelve True si el CPV principal O alguno de los adicionales pertenece a 33* o 85*.
+    cpvs_adicionales: cadena separada por comas/espacios con los CPVs extra.
+    """
+    todos = [str(cpv_principal or '').strip()]
+    if cpvs_adicionales:
+        todos += [c.strip() for c in str(cpvs_adicionales).replace(',', ' ').split()]
+    return any(c.startswith(p) for c in todos for p in CPV_PREFIJOS_SALUD if c)
 
 
 def filtrar_salud(lics, lotes, criterios, docs):
     """
     Aplica filtro CPV 33*/85* sobre la lista de licitaciones.
-    Mantiene TODOS los campos de metadatos — solo filtra por CPV principal.
+    Evalúa cpv_principal Y cpvs_adicionales para no perder expedientes mixtos.
     Los lotes, criterios y documentos se filtran por los expedientes supervivientes.
     """
-    lics_salud = [l for l in lics if es_cpv_salud(l.get('cpv_principal', ''))]
+    lics_salud = [
+        l for l in lics
+        if es_cpv_salud(l.get('cpv_principal', ''), l.get('cpvs_adicionales', ''))
+    ]
     exptes = {str(l['expediente']) for l in lics_salud}
 
     lotes_salud    = [x for x in lotes    if str(x.get('expediente', '')) in exptes]

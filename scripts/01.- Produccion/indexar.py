@@ -81,12 +81,22 @@ def crear_db(conn):
             FOREIGN KEY (expediente) REFERENCES licitaciones(expediente)
         )
     ''')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_ccaa    ON licitaciones(ccaa)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_estado  ON licitaciones(estado)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_fuente  ON licitaciones(fuente)')
+    # Índice único para UPSERT seguro: preserva ruta_local/descargado al re-indexar
+    conn.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_unico
+        ON documentos(expediente, doc_id)
+        WHERE doc_id IS NOT NULL AND TRIM(doc_id) != ''
+    ''')
+    # conn.execute('CREATE INDEX IF NOT EXISTS idx_ccaa    ON licitaciones(ccaa)')
+    # Index on 'estado' removed as it may have low cardinality and limited benefit.
+    # conn.execute('CREATE INDEX IF NOT EXISTS idx_fuente  ON licitaciones(fuente)')
+    # conn.execute('CREATE INDEX IF NOT EXISTS idx_periodo ON licitaciones(periodo)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_periodo ON licitaciones(periodo)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_cpv     ON licitaciones(cpv_principal)')
+    # Index on 'expediente' in documentos: useful for join operations with licitaciones.
     conn.execute('CREATE INDEX IF NOT EXISTS idx_doc_exp ON documentos(expediente)')
+    conn.commit()
+    print('  Base de datos creada/verificada.')
     conn.commit()
     print('  Base de datos creada/verificada.')
 
@@ -180,10 +190,8 @@ def indexar_todo(conn, anio):
     conn.commit()
     print(f'  Licitaciones indexadas: {len(df)}')
 
-    # Expedientes del año (para limpiar tablas relacionadas antes de reinsertar)
-    exps_anio = df['expediente'].astype(str).tolist()
-
     def _limpiar_y_reinsertar(tabla, ruta_csv, insertar_fn):
+        """Para lotes y criterios: DELETE + INSERT (no tienen estado local)."""
         if not os.path.exists(ruta_csv):
             return
         df_t = pd.read_csv(ruta_csv, sep=';', encoding='utf-8-sig', dtype={'expediente': str})
@@ -226,24 +234,61 @@ def indexar_todo(conn, anio):
         )
     _limpiar_y_reinsertar('criterios', _ruta_csv(anio, 'criterios'), ins_criterio)
 
-    # --- documentos ---
-    def ins_doc(conn, row):
-        conn.execute(
-            'INSERT INTO documentos (expediente, tipo_documento, doc_id, doc_url, doc_filename, medio_publicacion, fecha_publicacion, ruta_local, descargado, error) VALUES (?,?,?,?,?,?,?,?,?,?)',
-            (
-                _to_str(row.get('expediente', '')),
-                _to_str(row.get('tipo_documento', '')),
-                _to_str(row.get('doc_id', '')),
-                _to_str(row.get('doc_url', '')),
-                _to_str(row.get('doc_filename', '')),
-                _to_str(row.get('medio_publicacion', '')),
-                _to_str(row.get('fecha_publicacion', '')),
-                _to_str(row.get('ruta_local', '')),
-                _to_int(row.get('descargado', 0)),
-                _to_str(row.get('error', '')),
-            ),
-        )
-    _limpiar_y_reinsertar('documentos', _ruta_csv(anio, 'documentos'), ins_doc)
+    # --- documentos: UPSERT — preserva ruta_local/descargado (estado Selenium) ---
+    def _upsert_documentos(ruta_csv):
+        """
+        Para documentos del ATOM feed: UPSERT por (expediente, doc_id).
+        - Actualiza metadatos públicos (url, tipo, fecha...)
+        - NO sobreescribe ruta_local ni descargado (estado de descarga local)
+        Filas sin doc_id (añadidas por Selenium): INSERT ignorando conflicto.
+        """
+        if not os.path.exists(ruta_csv):
+            return
+        df_t = pd.read_csv(ruta_csv, sep=';', encoding='utf-8-sig', dtype={'expediente': str}, low_memory=False)
+        n = 0
+        for _, row in df_t.iterrows():
+            expediente   = _to_str(row.get('expediente', ''))
+            tipo         = _to_str(row.get('tipo_documento', ''))
+            doc_id       = _to_str(row.get('doc_id', ''))
+            doc_url      = _to_str(row.get('doc_url', ''))
+            doc_filename = _to_str(row.get('doc_filename', ''))
+            medio        = _to_str(row.get('medio_publicacion', ''))
+            fecha_pub    = _to_str(row.get('fecha_publicacion', ''))
+            # ruta_local y descargado del CSV solo se usan si no existe fila previa
+            ruta_local   = _to_str(row.get('ruta_local', ''))
+            descargado   = _to_int(row.get('descargado', 0))
+            error        = _to_str(row.get('error', ''))
+
+            if doc_id:
+                # UPSERT: actualiza metadatos pero preserva estado de descarga local
+                conn.execute('''
+                    INSERT INTO documentos
+                        (expediente, tipo_documento, doc_id, doc_url, doc_filename,
+                         medio_publicacion, fecha_publicacion, ruta_local, descargado, error)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(expediente, doc_id) DO UPDATE SET
+                        tipo_documento   = excluded.tipo_documento,
+                        doc_url          = excluded.doc_url,
+                        doc_filename     = excluded.doc_filename,
+                        medio_publicacion= excluded.medio_publicacion,
+                        fecha_publicacion= excluded.fecha_publicacion
+                        -- ruta_local, descargado, error: NO se tocan
+                ''', (expediente, tipo, doc_id, doc_url, doc_filename,
+                      medio, fecha_pub, ruta_local, descargado, error))
+            else:
+                # Sin doc_id: INSERT OR IGNORE (probablemente ya existe)
+                conn.execute('''
+                    INSERT OR IGNORE INTO documentos
+                        (expediente, tipo_documento, doc_id, doc_url, doc_filename,
+                         medio_publicacion, fecha_publicacion, ruta_local, descargado, error)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                ''', (expediente, tipo, doc_id, doc_url, doc_filename,
+                      medio, fecha_pub, ruta_local, descargado, error))
+            n += 1
+        conn.commit()
+        print(f'  Documentos indexados (upsert): {n}')
+
+    _upsert_documentos(_ruta_csv(anio, 'documentos'))
 
 
 if __name__ == '__main__':

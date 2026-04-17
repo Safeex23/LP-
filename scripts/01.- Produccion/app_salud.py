@@ -435,6 +435,19 @@ def ficha(expediente):
     return render_template_string(FICHA_HTML, lic=lic, lotes=lotes, criterios=criterios, docs=docs)
 
 
+def _resolver_ruta(ruta_local):
+    """Resuelve ruta_local (relativa o absoluta) a ruta absoluta verificada."""
+    if not ruta_local:
+        return None
+    p = os.path.join(RUTA_PDFS, ruta_local)
+    if os.path.exists(p):
+        return p
+    # Backward compat: podría ser ya absoluta (filas antiguas en BD)
+    if os.path.isabs(ruta_local) and os.path.exists(ruta_local):
+        return ruta_local
+    return None
+
+
 @app.route('/doc/<int:doc_id>')
 def redir_doc(doc_id):
     conn = get_db()
@@ -442,8 +455,9 @@ def redir_doc(doc_id):
     conn.close()
     if not doc:
         abort(404)
-    if doc['ruta_local'] and os.path.exists(doc['ruta_local']):
-        return send_file(doc['ruta_local'], mimetype='application/pdf')
+    ruta = _resolver_ruta(doc['ruta_local'])
+    if ruta:
+        return send_file(ruta, mimetype='application/pdf')
     if doc['doc_url']:
         return redirect(doc['doc_url'])
     abort(404)
@@ -454,9 +468,10 @@ def serve_pdf(doc_id):
     conn = get_db()
     doc = conn.execute('SELECT ruta_local, doc_filename FROM documentos WHERE id=?', (doc_id,)).fetchone()
     conn.close()
-    if not doc or not doc['ruta_local'] or not os.path.exists(doc['ruta_local']):
+    ruta = _resolver_ruta(doc['ruta_local']) if doc else None
+    if not ruta:
         abort(404)
-    return send_file(doc['ruta_local'], mimetype='application/pdf',
+    return send_file(ruta, mimetype='application/pdf',
                      download_name=doc['doc_filename'] or 'documento.pdf')
 
 
